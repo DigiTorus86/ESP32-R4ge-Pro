@@ -1,0 +1,1054 @@
+/***************************************************
+ESP32 Badge Time and Weather Display
+
+Requires:
+ - DS3231 Real Time Clock breakout
+ - BME280 Temperature, pressure, & humidity breakout
+ - WiFi network and credentials
+
+ Will operate in a degraded mode if any of the requirements are not available.
+
+ Controls:
+ - X/Y:         Cycle through display modes
+ - A:           Enter / commit set time
+ - Left/Right:  Move selection field
+ - Up/Down:     Increase/decrease selection value
+
+Copyright (c) 2020 Paul Pagel
+This is free software; see the license.txt file for more information.
+There is no warranty; not even for merchantability or fitness for a particular purpose.
+*****************************************************/
+
+#include <Wire.h>
+#include <Adafruit_GFX.h>
+#include <Adafruit_ILI9341.h>
+#include <XPT2046_Touchscreen.h>
+#include <Fonts/FreeMonoBold12pt7b.h> 
+#include <Fonts/FreeSansBold18pt7b.h> 
+#include <WiFi.h>
+#include <HTTPClient.h>
+#include <ArduinoJson.h>  // ArduinoJson by Benoit Blanchon
+#include "time.h"
+#include "esp32_r4ge_pro.h"
+#include "DS3231_RTC.h"
+#include "SparkFunBME280.h"
+#include "TFT_Helper.h"
+#include "icons.h"
+
+#define BADGE_WIFI_MODE  WIFI_MODE_AP // use WIFI_MODE_STA (station) for home WiFi, WIFI_MODE_AP (access point) when using mobile hotspot
+
+const char*    ssid     = "TODO"; // TODO: add your network ID here 
+const char*    password = "TODO"; // TODO: add your network password here 
+
+/*  To customize: 
+ *   1.  Go to https://www.weather.gov/documentation/services-web-api
+ *   2.  Enter your zipcode and click the Go button
+ *   3.  Copy the lat/long values from the resulting URL, i.e. lat=41.40137000000004&lon=-82.70880605999997
+ *       and past them into this URL:  https://api.weather.gov/points/<lat>,<lon>
+ *       example for Sandusky, OH:  https://api.weather.gov/points/41.40137000000004,-82.70880605999997
+ *   4.  Copy the value of the properties->forecast node to the forecast_api_url assignment below:      
+ */   
+const char*    forecast_api_url = "https://api.weather.gov/gridpoints/CLE/48,56/forecast ";  // TODO: change this for your city
+//const char*    forecast_api_url = "https://api.weather.gov/gridpoints/CLE/19,62/forecast?units=us";  // Perrysburg, OH
+
+#define FORECAST_REFRESH_MS       3600000  // 1 hr
+#define BME280_I2C_ADDR           0X76     // default address for BME280 is 0x77, mine was set to 0x76
+
+// Display element color settings
+#define COLOR_SCREEN_BGD          ILI9341_BLACK
+#define COLOR_DATE                ILI9341_ORANGE
+#define COLOR_TIME                ILI9341_BLACK
+#define COLOR_TIME_BGD            ILI9341_ORANGE
+#define COLOR_TIME_EDIT           ILI9341_BLUE
+#define COLOR_SENSOR_LINES        ILI9341_DARKGREY
+#define COLOR_SENSOR_TEMP         ILI9341_LIGHTGREY
+#define COLOR_SENSOR_HUMID        ILI9341_CYAN
+#define COLOR_SENSOR_PRESSURE     ILI9341_BLUE
+#define COLOR_FORECAST_TEMP       ILI9341_GREEN
+#define COLOR_FORECAST_TITLE      ILI9341_BLACK
+#define COLOR_FORECAST_TITLE_BGD  ILI9341_GREEN
+#define COLOR_FORECAST_BODY       ILI9341_DARKGREY
+
+#define SCREEN_ROWS_MONO12       9
+#define SCREEN_COLS_MONO12      22
+
+// Calculates the screen X position for the given time digit 
+// digit index values:  0 = h1, 1=h2, 2=m1, 3=m2, 4=s1, 5=s2
+#define TIME_DIGIT_X(digit)       (20 + (digit) * 38 + ((digit) > 1 ? 20 : 0) + ((digit) > 3 ? 20 : 0))
+
+const uint16_t net_connect_timeout_sec = 10;
+const char*   ntp_server = "pool.ntp.org";
+// TODO: change this if you are not in the Eastern US time zone
+const long    gmt_offset_sec = -18000;      // EST GMT-5 * 3600 seconds per hour
+const int     daylight_offset_sec = 3600;   // Set to 0 if your region does not observe DST
+
+bool wifi_available, ds3231_available, bme280_available;  
+
+#define DISPLAY_MODE_CNT  4
+enum display_mode_type 
+{
+  MODE_TIME_AND_SENSOR,
+  MODE_DAY_FORECAST,
+  MODE_TOMORROW_FORECAST,
+  MODE_SET_TIME
+};
+enum display_mode_type display_mode, prev_display_mode;
+
+struct ds3231_time_t curr_time;
+DS3231_RTC rtc = DS3231_RTC();
+BME280 sensor;
+
+// Use https://arduinojson.org/v5/assistant/ to find appropriate JSON memory size
+StaticJsonDocument<15000> json_doc; // holds the forecast from the weather API
+unsigned long forecast_age_ms;    // # milliseconds elapsed since the forecast was retrieved
+bool forecast_loaded = false;
+
+bool btn_was_pressed[8], btn_pressed[8], btn_released[8];
+uint8_t tft_led_bright = 64;
+
+uint8_t curr_time_digits[6];
+uint8_t prev_time_digits[6];
+uint8_t prev_day;
+
+int16_t curr_temp_f, curr_temp_c, curr_humid, curr_pressure, forecast_temp_f;
+int16_t prev_temp_f, prev_temp_c, prev_humid, prev_pressure, prev_forecast_temp_f;
+
+uint8_t spkr_channel = 1;
+
+XPT2046_Touchscreen ts(TCH_CS);
+Adafruit_ILI9341 tft = Adafruit_ILI9341(TFT_CS, TFT_DC, TFT_RST);
+
+// Private function prototypes
+void currTimeToDigits();
+void digitsToCurrTime();
+void readBME280();
+bool connectToWiFi(uint16_t timeout_sec);
+bool getForecast();
+bool readControllerTime(struct ds3231_time_t *read_time);
+void setControllerTime(ds3231_time_t set_time);
+bool getNtpTime();
+void beginTimeAndSensor();
+void updateTimeAndSensor();
+void beginDayForecast();
+void updateDayForecast();
+void beginTomorrowForecast();
+void updateTomorrowForecast();
+void beginSetTime();
+void updateSetTime();
+void checkButtonPresses();
+void updateScreen();
+
+
+void setup() 
+{
+  Serial.begin(9600);
+  Serial.println("ESP32 R4ge Pro Time and Weather"); 
+  delay(100);
+  
+   pinMode(ESP_LED, OUTPUT);  // built-in blue LED on NodeMCU
+
+  // Set up shift register pins
+  pinMode(SR_PL, OUTPUT);
+  pinMode(SR_CP, OUTPUT);   
+  pinMode(SR_Q7, INPUT);
+
+  // Set up the SPI CS output pins
+  pinMode(TFT_CS, OUTPUT);
+  pinMode(TCH_CS, OUTPUT);
+  pinMode(SD_CS, OUTPUT);
+
+  pinMode(TFT_LED, OUTPUT);
+  // Set up the TFT backlight brightness control
+  //  Keep Hz out of audible range.  Lower does lead to visible flickering
+  ledcSetup(TFT_LED_CHANNEL, 20000, 8);  // Hz max, 8 bit resolution.  
+  ledcAttachPin(TFT_LED, TFT_LED_CHANNEL);
+  ledcWrite(TFT_LED_CHANNEL, tft_led_bright);
+  
+  // Set up the joysticks
+  pinMode(JOYX_L, INPUT);
+  pinMode(JOYY_L, INPUT);
+  pinMode(JOYX_R, INPUT);
+  pinMode(JOYY_R, INPUT);
+
+  // Set up the TFT screen
+  tft.begin();
+  tft.setRotation(SCREEN_ROT);
+
+  ts.begin();
+  ts.setRotation(TCHSCRN_ROT);
+
+  Wire.begin();  // fire up I2C
+
+  // Initialize the BME280 sensor
+  sensor.setI2CAddress(BME280_I2C_ADDR);    
+  bme280_available = sensor.beginI2C();
+  if (bme280_available == false)
+  {
+    Serial.println("The BME280 sensor did not respond. Check I2C wiring and address jumpers.");
+    //digitalWrite(LED_1, HIGH);  // redlight!
+  }
+
+  // Check the DS3231 RTC
+  ds3231_available = rtc.readDS3231time(&curr_time);
+  if (ds3231_available == false)
+  {
+    Serial.println("The DS3231 RTC did not respond. Check I2C wiring and address jumpers.");
+    //digitalWrite(LED_1, HIGH);  // redlight!
+  }
+
+  // Try to get the current local time from NTP server
+  if (strlen(ssid) > 0)
+  {
+    wifi_available = getNtpTime();
+    if (wifi_available)
+    {
+      getForecast();
+    }
+    else
+    {
+      Serial.println("Unable to get Network Time. Check network SSID and password.");
+      //digitalWrite(LED_1, HIGH);  // redlight!
+    }
+  }
+  else
+  {
+    Serial.println("No network SSID specified.");
+    wifi_available = false;
+  }
+ 
+  
+  display_mode = MODE_TIME_AND_SENSOR;
+  beginTimeAndSensor();
+}
+
+/*
+ * Store the current time value in hhmmss digit buffer array
+ */
+void currTimeToDigits()
+{
+  curr_time_digits[0] = curr_time.hour / 10;
+  curr_time_digits[1] = curr_time.hour % 10;
+  curr_time_digits[2] = curr_time.minute / 10;
+  curr_time_digits[3] = curr_time.minute % 10;
+  curr_time_digits[4] = curr_time.second / 10;
+  curr_time_digits[5] = curr_time.second % 10;
+}
+
+/*
+ * 
+ */
+void digitsToCurrTime()
+{
+  curr_time.hour = min(curr_time_digits[0] * 10 + curr_time_digits[1], 24); 
+  curr_time.minute = min(curr_time_digits[2] * 10 + curr_time_digits[3], 59);
+  curr_time.second = min(curr_time_digits[4] * 10 + curr_time_digits[5], 59); 
+}
+
+/*
+ * Read temperature, humidity, and pressure sensor values from the BME280
+ */
+void readBME280()
+{
+  static uint16_t cntr = 0;
+
+  if (cntr == 0)
+  {
+    curr_temp_f = (int16_t)sensor.readTempF();  
+    curr_temp_c = (int16_t)sensor.readTempC();  
+    curr_humid = (int16_t)sensor.readFloatHumidity();    
+    float pressure = sensor.readFloatPressure() * 0.0002952998751f;  // kPa to inHg
+    curr_pressure = (int16_t)(pressure); 
+  }
+  cntr = (cntr + 1) % 100;  // check every 100th time this is called
+}
+
+/*
+ * Connects the configured WiFi network
+ */
+bool connectToWiFi(uint16_t timeout_sec)
+{
+  uint16_t elapsed_sec = 0;
+
+  Serial.printf("Connecting to %s ", ssid);
+  //digitalWrite(LED_1, LOW);  // reset error indicator
+
+  WiFi.mode(BADGE_WIFI_MODE);
+  delay(500);
+  WiFi.begin(ssid, password);
+  
+  while ((WiFi.status() != WL_CONNECTED) && (elapsed_sec < timeout_sec)) 
+  {
+    digitalWrite(ESP_LED, HIGH);
+    delay(500);
+    Serial.print(".");
+    digitalWrite(ESP_LED, LOW);
+    delay(500);
+    elapsed_sec += 1;
+  }
+  Serial.println();
+  
+  //if (WiFi.status() != WL_CONNECTED)
+  if (elapsed_sec >= timeout_sec)
+  {
+    //digitalWrite(LED_1, HIGH); // red=problem 
+    Serial.println("Network connection timeout.");
+    wifi_available = false;
+    return false;  // failure 
+  }
+
+  wifi_available = true;
+  return true; // success
+}
+
+/*
+ * Get the forecast data from the National Weather Service API
+ */
+bool getForecast()
+{
+  HTTPClient client;
+  bool success = false;
+  
+  if (forecast_loaded == true && forecast_age_ms < FORECAST_REFRESH_MS)  
+  {
+    return true;  // forecast is still fresh - no need to load
+  }
+  
+  if (!connectToWiFi(net_connect_timeout_sec))
+  {
+    return false;  // failed to connect to WiFi
+  }
+
+  client.begin(forecast_api_url);
+  int16_t http_code = client.GET();
+
+  if (http_code > 0) // success!
+  { 
+    String payload = client.getString();
+    Serial.println(http_code);
+    //Serial.println(payload);
+
+    DeserializationError error = deserializeJson(json_doc, payload);
+    if (!error) 
+    {
+      digitalWrite(ESP_LED, HIGH);
+      Serial.println("JSON parsed successfully.");
+      forecast_loaded = true;
+      forecast_age_ms = 0; // reset age counter
+
+      // testing
+      const char* updated = json_doc["properties"]["updated"];  // should be a date-time string like 2019-11-06T23:49:22+00:00
+      //float elevation = json_doc["properties"]["elevation"]["value"]; // 192.9384
+      forecast_temp_f = json_doc["properties"]["periods"][0]["temperature"];  // TODO: put logic to check temp units first  
+      
+      Serial.print("Forecast updated: ");
+      Serial.println(updated);
+      success = true;
+    }
+    else
+    {
+      Serial.print(F("deserializeJson() failed: "));
+      Serial.println(error.c_str());
+    }
+  }
+  else
+  {
+    Serial.print("HTTP error: ");
+    Serial.println(http_code);
+    //digitalWrite(LED_1, HIGH);  // red=problem
+  }
+  client.end();
+ 
+  digitalWrite(ESP_LED, LOW);
+  WiFi.disconnect();
+  return success;
+}
+
+/*
+ * Retrieve the local time from the ESP32 internal RTC
+ */
+bool readControllerTime(struct ds3231_time_t *read_time)
+{
+  struct tm timeinfo;
+  
+  if(getLocalTime(&timeinfo))
+  {
+    /*
+    Serial.print(timeinfo.tm_year);
+    Serial.print("-");
+    Serial.print(timeinfo.tm_mon);
+    Serial.print("-");
+    Serial.print(timeinfo.tm_mday);
+    Serial.print("[");
+    Serial.print(timeinfo.tm_wday);
+    Serial.print("]");
+    Serial.print(timeinfo.tm_hour);
+    Serial.print(":");
+    Serial.print(timeinfo.tm_min);
+    Serial.print(":");
+    Serial.println(timeinfo.tm_sec);
+    */
+   
+    read_time->second = timeinfo.tm_sec;
+    read_time->minute = timeinfo.tm_min;
+    read_time->hour = timeinfo.tm_hour;
+    read_time->dayOfWeek = timeinfo.tm_wday + 1;
+    read_time->dayOfMonth = timeinfo.tm_mday;
+    read_time->month = timeinfo.tm_mon + 1;
+    read_time->year = timeinfo.tm_year % 100;
+    return true;
+  }
+  return false;
+}
+
+/*
+ * Set the ESP32's internal RTC based on the passed ds3231 time
+ */
+void setControllerTime(ds3231_time_t set_time)
+{
+    struct tm t;
+    time_t time_now;
+
+    t.tm_year = set_time.year + 100;  // Year - 1900
+    t.tm_mon = set_time.month - 1;    // Month, where 0 = jan
+    t.tm_mday = set_time.dayOfMonth;  // Day of the month
+    t.tm_hour = set_time.hour;
+    t.tm_min = set_time.minute;
+    t.tm_sec = set_time.second;
+    t.tm_isdst = 0;                   // Is DST on? 1 = yes, 0 = no, -1 = unknown
+    
+    time_now = mktime(&t);
+
+    timeval epoch = {time_now, 0};
+    settimeofday((const timeval*)&epoch, 0);
+
+    Serial.println(time_now);
+
+    // testing
+    struct ds3231_time_t test_time;
+    readControllerTime(&test_time);
+
+    Serial.print(rtc.getDayAbbr(test_time.dayOfWeek));
+    Serial.print(", ");
+    if (test_time.dayOfMonth < 10) Serial.print("0");
+    Serial.print(test_time.dayOfMonth);
+    Serial.print(" ");
+    Serial.print(rtc.getMonthAbbr(test_time.month));
+    Serial.print(" ");
+    Serial.print("20");
+    Serial.print(test_time.year); 
+    Serial.print(" ");
+    Serial.print(test_time.hour); 
+    Serial.print(":");
+    Serial.print(test_time.minute);
+    Serial.print(":");
+    Serial.println(test_time.second);
+}
+
+/*
+ * Get the current time from the configured NTP server
+ * and use it to set the ESP32 internal and DS3231 RTC time values
+ */
+bool getNtpTime()
+{
+  if (!connectToWiFi(net_connect_timeout_sec))
+    return false;
+  
+  configTime(gmt_offset_sec, daylight_offset_sec, ntp_server); // from ESP32 Time library
+
+  if (readControllerTime(&curr_time))
+  {
+    digitalWrite(ESP_LED, HIGH); // flash green=success
+    rtc.setDS3231time(curr_time);
+    digitalWrite(ESP_LED, LOW);
+  }
+  else
+  {
+    //digitalWrite(LED_1, HIGH); // red=problem
+    Serial.println(F("Unable to retrieve controller time."));
+  }
+  WiFi.disconnect();
+  return true;
+}
+
+/*
+ * Initial set up for the Time and Sensor display mode
+ */
+void beginTimeAndSensor()
+{
+  tft.fillScreen(COLOR_SCREEN_BGD);
+  tft.fillRect(0, 30, 320, 74, COLOR_TIME_BGD);  // time box
+
+  if (wifi_available)
+  {
+    tft.drawRGBBitmap(302, 0, (uint16_t *)wifi_ico, 16, 11);
+  }
+
+  if (bme280_available)
+  {
+    tft.drawRGBBitmap(0, 0, (uint16_t *)thermometer_ico, 5, 13);
+  }
+
+  if (ds3231_available)
+  {
+    tft.drawRGBBitmap(12, 0, (uint16_t *)clock_ico, 12, 12);
+  }
+
+  
+
+  // Initial time display
+  tft.setFont(&FreeSansBold18pt7b);
+  tft.setTextSize(2);
+  tft.setTextColor(COLOR_TIME, COLOR_TIME_BGD);
+  tft.setCursor(98, 92);
+  tft.print(":");
+  tft.setCursor(194, 92);
+  tft.print(":");
+
+  // force redraw of all date, time, and sensor values
+  for (int i = 0; i < 6; i++)
+  {
+    prev_time_digits[i] = 11;
+  }
+  prev_day = 0;
+  prev_temp_f = 0;
+  prev_temp_c = 0;
+  prev_humid = 0;
+  prev_pressure = 0;
+
+  ds3231_available = rtc.readDS3231time(&curr_time);
+
+  if (bme280_available)
+  {  
+    tft.drawLine(0, 180, 320, 180, COLOR_SENSOR_LINES);   // humidity / pressure
+    tft.drawLine(160, 180, 160, 240, COLOR_SENSOR_LINES); // seperator lines
+  }
+  else if (forecast_loaded)
+  {
+    const char* short_forecast = json_doc["properties"]["periods"][0]["shortForecast"]; 
+
+    curr_temp_f = json_doc["properties"]["periods"][0]["temperature"];
+    curr_temp_c = (int16_t)((float)curr_temp_f - 32) / 1.8;
+    
+    tft.setFont(&FreeMonoBold12pt7b);
+    tft.setTextColor(COLOR_FORECAST_BODY);
+    tft.setTextSize(1);
+    tft.setCursor(0, 200);
+    TFT_drawWordWrap(short_forecast, 2, SCREEN_COLS_MONO12, &tft);  
+  } 
+}
+
+/*
+ * Update the screen for the Time and Sensor display mode
+ */
+void updateTimeAndSensor()
+{
+  int16_t x;
+
+  // Get current time and temp values
+  if (ds3231_available)
+  {
+    ds3231_available = rtc.readDS3231time(&curr_time);
+  }
+  else
+  {
+    readControllerTime(&curr_time);
+  }
+  currTimeToDigits();
+  
+  if (btn_pressed[BTN_UP])
+  {
+    tft_led_bright = (tft_led_bright > 10) ? tft_led_bright - 10 : 0;
+    ledcWrite(TFT_LED_CHANNEL, tft_led_bright);
+  }
+
+  if (btn_pressed[BTN_DOWN])
+  {
+    tft_led_bright = (tft_led_bright < 245) ? tft_led_bright + 10 : 255;
+    ledcWrite(TFT_LED_CHANNEL, tft_led_bright);
+  }
+
+  // Time
+  tft.setFont(&FreeSansBold18pt7b);
+  tft.setTextSize(2);
+  tft.setTextColor(COLOR_TIME, COLOR_TIME_BGD);
+  tft.setCursor(20, 92);
+
+  for (uint8_t i = 0; i < 6; i++)
+  {
+    x = TIME_DIGIT_X(i);
+    if (prev_time_digits[i] != curr_time_digits[i])
+    {
+      tft.fillRect(x, 44, 38, 50, COLOR_TIME_BGD);
+      tft.setCursor(x, 92);
+      tft.print(curr_time_digits[i]);
+    }
+    prev_time_digits[i] = curr_time_digits[i];
+  }
+
+  tft.setFont(&FreeMonoBold12pt7b);
+ 
+  // Date
+  if (prev_day != curr_time.dayOfMonth)
+  {
+    tft.fillRect(50, 0, 250, 29, COLOR_SCREEN_BGD); // clear date
+    tft.setTextSize(1);
+    tft.setTextColor(COLOR_DATE);
+    tft.setCursor(50, 18);
+    tft.print(rtc.getDayAbbr(curr_time.dayOfWeek));
+    tft.print(", ");
+    if (curr_time.dayOfMonth < 10) tft.print("0");
+    tft.print(curr_time.dayOfMonth);
+    tft.print(" ");
+    tft.print(rtc.getMonthAbbr(curr_time.month));
+    tft.print(" ");
+    tft.print("20");
+    tft.print(curr_time.year); 
+
+    prev_day = curr_time.dayOfMonth;
+  }
+
+  // Environmental 
+  if (bme280_available)
+  {
+    tft.setTextColor(COLOR_SENSOR_TEMP);
+    readBME280(); 
+  }
+  else
+  {
+    // just using forecast temp
+    tft.setTextColor(COLOR_FORECAST_TEMP);
+  }
+   
+  // Temperature
+  if (prev_temp_f != curr_temp_f)
+  {
+    tft.fillRect(0, 128, 106, 38, COLOR_SCREEN_BGD);   // clear temperature F
+    tft.fillRect(170, 128, 106, 38, COLOR_SCREEN_BGD); // clear temperature C
+
+    x = 10 + (curr_temp_f < 100 ? 30 : 0) + (curr_temp_f < 10 ? 30 : 0) - (curr_temp_f < 0 ? 30 : 0) - (curr_temp_f <= -10 ? 30 : 0); 
+    
+    tft.setTextSize(2);
+    tft.setCursor(x, 162);
+    tft.print(curr_temp_f);
+  
+    tft.drawCircle(112, 138, 4, COLOR_SENSOR_TEMP);
+    
+    tft.setTextSize(1);
+    tft.setCursor(124, 162);
+    tft.print("F");
+    
+    prev_temp_f = curr_temp_f;
+
+    if (forecast_loaded && prev_forecast_temp_f != forecast_temp_f)
+    {
+      if (bme280_available)
+      {
+        // Already howing sensor temp on left, now show forecast on right
+        x = 180 + (forecast_temp_f < 100 ? 30 : 0) + (forecast_temp_f < 10 ? 30 : 0) - (forecast_temp_f < 0 ? 30 : 0) - (forecast_temp_f <= -10 ? 30 : 0);
+        tft.setTextColor(COLOR_FORECAST_TEMP);
+        tft.setTextSize(2);
+        tft.setCursor(x, 162);
+        tft.print(forecast_temp_f);
+      
+        tft.drawCircle(284, 138, 4, COLOR_FORECAST_TEMP);
+      
+        tft.setTextSize(1);
+        tft.setCursor(296, 162);
+        tft.print("F");
+
+        // Indicate that the left value is from sensor, right is from forecast
+        tft.setTextColor(COLOR_SENSOR_TEMP);
+        tft.setCursor(124, 126);
+        tft.print("in");
+
+        tft.setTextColor(COLOR_FORECAST_TEMP);
+        tft.setCursor(164, 126);
+        tft.print("out");
+      }
+      else 
+      {
+        // No temp sensor available, so show forecast temp in C on right
+        x = 180 + (curr_temp_c < 100 ? 30 : 0) + (curr_temp_c < 10 ? 30 : 0) - (curr_temp_c < 0 ? 30 : 0) - (curr_temp_c <= -10 ? 30 : 0);
+        tft.setTextColor(COLOR_FORECAST_TEMP);
+        tft.setTextSize(2);
+        tft.setCursor(x, 162);
+        tft.print(curr_temp_c);
+
+        tft.drawCircle(284, 138, 4, COLOR_FORECAST_TEMP);
+      
+        tft.setTextSize(1);
+        tft.setCursor(296, 162);
+        tft.print("C");
+
+        tft.setCursor(148, 126);
+        tft.print("out");      
+      }
+        
+    }
+    else if (!forecast_loaded)
+    {
+      // Display the BME sensor temperature in celsius
+      x = 180 + (curr_temp_c < 100 ? 30 : 0) + (curr_temp_c < 10 ? 30 : 0) - (curr_temp_c < 0 ? 30 : 0) - (curr_temp_c <= -10 ? 30 : 0);
+      tft.setTextSize(2);
+      tft.setCursor(x, 162);
+      tft.print(curr_temp_c);
+    
+      tft.drawCircle(284, 134, 4, COLOR_SENSOR_TEMP);
+    
+      tft.setTextSize(1);
+      tft.setCursor(296, 158);
+      tft.print("C");
+      
+      tft.setCursor(154, 126);
+      tft.print("in");
+    }
+  } 
+
+  if (!bme280_available)
+  {
+    // no humidity or pressure info available
+    // short forecast is shown in this area instead
+    return;
+  }
+
+  // Humidity
+  if (prev_humid != curr_humid)
+  {
+    tft.fillRect(0, 190, 106, 50, COLOR_SCREEN_BGD);
+    x = 10 + (curr_humid < 100 ? 30 : 0) + (curr_humid < 10 ? 30 : 0); 
+    tft.setTextColor(COLOR_SENSOR_HUMID);
+    tft.setTextSize(2);
+    tft.setCursor(x, 230);
+    tft.print(curr_humid);
+  
+    tft.setTextSize(1);
+    tft.setCursor(112, 210);
+    tft.print("%");
+    
+    tft.setCursor(112, 232);
+    tft.print("Hum");
+
+    prev_humid = curr_humid;
+  }
+  
+  // Barometric pressure
+  if (prev_pressure != curr_pressure)
+  {
+    tft.fillRect(170, 190, 106, 50, COLOR_SCREEN_BGD);
+
+    x = 180 + (curr_pressure < 100 ? 30 : 0) + (curr_pressure < 10 ? 30 : 0); 
+    tft.setTextColor(COLOR_SENSOR_PRESSURE);
+    tft.setTextSize(2);
+    tft.setCursor(x, 230);
+    tft.print(curr_pressure);
+  
+    tft.setTextSize(1);
+    tft.setCursor(284, 210);
+    tft.print("in");
+    tft.setCursor(284, 232);
+    tft.print("Hg");
+
+    prev_pressure = curr_pressure;
+  }
+}
+
+/*
+ * Initial set up for the Current Day Forecast display mode
+ */
+void beginDayForecast() 
+{
+  tft.fillScreen(COLOR_SCREEN_BGD);
+
+  tft.setFont(&FreeMonoBold12pt7b);
+  tft.setTextColor(COLOR_FORECAST_TITLE, COLOR_FORECAST_TITLE_BGD);
+  tft.setTextSize(1);
+  tft.setCursor(0, 50);
+
+  if (!wifi_available) 
+  {
+    tft.print("WiFi not available");
+    return;
+  }
+
+  if (forecast_loaded == false || forecast_age_ms >= FORECAST_REFRESH_MS)
+  {
+    
+    tft.print("Getting Forecast...");
+    
+    bool success = getForecast();
+  
+    if (!success)
+    {
+      tft.setCursor(0, 40);
+      tft.println("Unable to get forecast.");
+      tft.println("Check internet connection.");
+      return;
+    }
+  }
+  
+  // Display the forecast period title and body
+  const char* period_name = json_doc["properties"]["periods"][0]["name"]; 
+  const char* detailed_forecast = json_doc["properties"]["periods"][0]["detailedForecast"]; 
+  
+  tft.fillScreen(COLOR_SCREEN_BGD);
+  tft.fillRect(0, 0, 320, 24, COLOR_FORECAST_TITLE_BGD);
+  
+  tft.setCursor(0, 20);
+  TFT_drawTextUpper(period_name, &tft);  // i.e. TODAY, TONIGHT
+
+  tft.setTextColor(COLOR_FORECAST_BODY);
+  tft.setCursor(0, 50);
+
+  TFT_drawWordWrap(detailed_forecast, 8, SCREEN_COLS_MONO12, &tft);
+}
+
+/*
+ * Update the screen for the Current Day Forecast display mode
+ */
+void updateDayForecast() 
+{
+   
+}
+
+/*
+ * Initial setup for the Tomorrow Forecast display mode
+ */
+void beginTomorrowForecast() 
+{
+  tft.fillScreen(COLOR_SCREEN_BGD);
+  
+  tft.fillRect(0, 0, 320, 24, COLOR_FORECAST_TITLE_BGD);
+  tft.setFont(&FreeMonoBold12pt7b);
+  tft.setTextColor(COLOR_FORECAST_TITLE, COLOR_FORECAST_TITLE_BGD);
+  tft.setTextSize(1);
+
+  const char* period_name = json_doc["properties"]["periods"][1]["name"]; 
+  const char* detailed_forecast = json_doc["properties"]["periods"][1]["detailedForecast"]; 
+
+  tft.setCursor(0, 20);
+  TFT_drawTextUpper(period_name, &tft);
+
+  tft.setTextColor(COLOR_FORECAST_BODY);
+  tft.setCursor(0, 50);
+  TFT_drawWordWrap(detailed_forecast, 9, SCREEN_COLS_MONO12, &tft);
+}
+
+/*
+ * Update the screen for the Tomorrow Forecast display mode
+ */
+void updateTomorrowForecast() 
+{
+  
+}
+
+/*
+ * Initial setup for the manual Set Time display mode 
+ */
+void beginSetTime() 
+{
+  tft.fillScreen(COLOR_SCREEN_BGD);
+
+  tft.setFont(&FreeMonoBold12pt7b);
+  tft.setTextColor(COLOR_DATE);
+  tft.setTextSize(1);
+  tft.setCursor(0, 20);
+  tft.print("SET TIME");
+
+  tft.setTextColor(COLOR_FORECAST_BODY);
+  tft.setCursor(0, 160);
+  tft.println("Use dir btns to change");
+  tft.println("Press A to confirm");
+  tft.println("X or Y to cancel");
+  
+  tft.fillRect(0, 30, 320, 80, COLOR_TIME_BGD);       // time box
+
+  tft.setFont(&FreeSansBold18pt7b);
+  tft.setTextSize(2);
+  tft.setTextColor(COLOR_TIME, COLOR_TIME_BGD);
+
+  tft.setCursor(98, 92);
+  tft.print(":");
+  tft.setCursor(194, 92);
+  tft.print(":");
+
+  uint16_t x;
+  for (uint8_t i = 0; i < 6; i++)
+  {
+    x = TIME_DIGIT_X(i);
+    tft.fillRect(x, 44, 38, 50, COLOR_TIME_BGD);
+    tft.setCursor(x, 92);
+    tft.print(curr_time_digits[i]);
+  }
+}
+
+/*
+ * Update the screen for the manual Set Time display mode
+ */
+void updateSetTime() 
+{
+  static uint16_t edit_field, prev_edit_field;
+  static uint16_t edit_x, edit_y;
+  static bool     redraw;
+
+  // TODO:  add date change functionality(?)
+
+  prev_edit_field = edit_field;
+
+  if (btn_released[BTN_LEFT])
+  {
+    edit_field = (edit_field > 0 ? edit_field - 1 : 0);
+    redraw = true;
+  }
+
+  if (btn_released[BTN_RIGHT])
+  {
+    edit_field = (edit_field < 5 ? edit_field + 1 : 5);
+    redraw = true;
+  }
+
+  if (btn_released[BTN_UP])
+  {
+    curr_time_digits[edit_field] = curr_time_digits[edit_field] + 1;
+    redraw = true;
+  }
+
+  if (btn_released[BTN_DOWN])
+  {
+    curr_time_digits[edit_field] = curr_time_digits[edit_field] - 1;
+    redraw = true;
+  }
+
+  if (redraw == true)
+  {
+    // Erase previous edit field highlight
+    tft.fillRect(TIME_DIGIT_X(prev_edit_field), 44, 38, 50, COLOR_TIME_BGD);
+    tft.setTextColor(COLOR_TIME, COLOR_TIME_EDIT);
+    tft.setCursor(TIME_DIGIT_X(prev_edit_field), 92);
+    tft.print(curr_time_digits[prev_edit_field]);
+
+    // Draw new edit field highlight
+    tft.setTextColor(COLOR_TIME_EDIT, COLOR_TIME);  // TODO!
+    tft.setCursor(TIME_DIGIT_X(edit_field), 92);
+    tft.print(curr_time_digits[edit_field]);    
+  }
+
+  if (btn_was_pressed[BTN_A])
+  {
+    // Commit the changes go back to time mode
+    digitsToCurrTime();
+    setControllerTime(curr_time);
+    rtc.setDS3231time(curr_time);
+
+    display_mode = MODE_TIME_AND_SENSOR;
+  } 
+}
+
+void checkButtonPresses()
+{
+  bool pressed = false;
+  
+  digitalWrite(SR_CP, LOW);
+  digitalWrite(SR_PL, LOW);
+  delay(5);
+  digitalWrite(SR_PL, HIGH);
+
+  for(uint8_t i = 0; i < 8; i++)
+  {
+    btn_was_pressed[i] = btn_pressed[i];  // track previous state
+    pressed = (digitalRead(SR_Q7) == LOW ? 1: 0);// read the state of the SO:
+    btn_released[i] = !pressed && btn_pressed[i];
+    btn_pressed[i] = pressed;
+    // Shift the next button pin value into the serial data out
+    digitalWrite(SR_CP, LOW);
+    delay(1);
+    digitalWrite(SR_CP, HIGH);
+    delay(1);
+    //Serial.print(i); Serial.print(": "); Serial.print(btn_pressed[i]); Serial.print(" - "); Serial.println(btn_released[i]);
+  }
+}
+
+/*
+ * Main screen update logic.  Call on each loop.
+ */
+void updateScreen()
+{
+  if (prev_display_mode != display_mode)
+  {
+    // do the initial drawing of the screen for the new display mode
+    switch (display_mode)
+    {
+      case MODE_TIME_AND_SENSOR: 
+        beginTimeAndSensor();
+        break;
+        
+      case MODE_DAY_FORECAST: 
+        beginDayForecast();
+        break;
+
+      case MODE_TOMORROW_FORECAST: 
+        beginTomorrowForecast();
+        break;
+
+      case MODE_SET_TIME: 
+        beginSetTime();
+        break;
+
+      default:
+        display_mode = MODE_TIME_AND_SENSOR;
+        beginTimeAndSensor();
+        break;    
+    }
+  }
+
+  prev_display_mode = display_mode;
+  
+  // do the update for the current display mode
+  switch (display_mode)
+  {
+    case MODE_TIME_AND_SENSOR: 
+      updateTimeAndSensor();
+      break;
+      
+    case MODE_DAY_FORECAST: 
+      updateDayForecast();
+      break;
+
+    case MODE_TOMORROW_FORECAST: 
+      updateTomorrowForecast();
+      break;
+
+    case MODE_SET_TIME: 
+      updateSetTime();
+      break;
+
+    default:
+      display_mode = MODE_TIME_AND_SENSOR;
+      updateTimeAndSensor();
+      break;    
+  }
+}
+
+/*
+ * Main program loop
+ */
+void loop(void)
+{
+  unsigned long start_time = millis();
+
+  checkButtonPresses();
+
+  if (btn_released[BTN_X])
+  {
+    display_mode = (display_mode_type)(display_mode > 0 ? display_mode - 1 : DISPLAY_MODE_CNT - 1);
+  }
+
+  if (btn_released[BTN_Y])
+  {
+    display_mode = (display_mode_type)((display_mode + 1) % DISPLAY_MODE_CNT);
+  }
+
+  updateScreen();
+  delay(50);
+
+  forecast_age_ms = forecast_age_ms +  millis() - start_time;
+}
