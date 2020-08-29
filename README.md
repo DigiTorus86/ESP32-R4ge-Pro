@@ -15,6 +15,7 @@ Software and resources for the ESP32 R4ge Pro custom badge.  Both the hardware a
 - Microphone (i.e. ADMP401)<br>
 - Some sketches have additional hardware requirements (components attached to I2C or Serial pins, or SD card)<br>
 - See BOM file in the documents folder for full list of components.<br>
+- STL file for printing a simple case also included in the documents folder.<br>
 </p>
 <h3>App Descriptions</h3>
 <p>
