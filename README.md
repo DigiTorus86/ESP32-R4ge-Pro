@@ -22,6 +22,7 @@ Software and resources for the ESP32 R4ge Pro custom badge.  Both the hardware a
 - Audio:   Allows for WAV recording, play back, serialization, and frequency analysis.  Requires SD card for some functions.<br>
 - Drummer: A 4-channel sequencer using percussion samples.<br>
 - Prong:   A simple pong-type game for 1 or 2 players.<br>
+- Synth:   A graphical 4-operator/4-voice FM synth, playable via on-screen keyboard + stylus, 8 step sequencer, or MIDI input on the RX2 pin. 
 - Test1:   Used to verify the operation of the board components and do any calibration (microphone/joysticks).<br> 
 </p>
 <p>
