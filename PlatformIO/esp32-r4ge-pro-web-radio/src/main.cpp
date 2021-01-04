@@ -1,3 +1,17 @@
+/***************************************************
+* A wireless internet radio player with stereo output.  
+* Includes a small list of stations.  
+* Displays current track information once connected.
+*
+* Requires:
+* - ESP32 R4ge Pro 
+* - ESP8266Audio library:  https://github.com/earlephilhower/ESP8266Audio 
+
+Copyright (c) 2021 Paul Pagel
+This is free software; see the license.txt file for more information.
+There is no warranty; not even for merchantability or fitness for a particular purpose.
+****************************************************/
+
 #include <Arduino.h>
 #include <SD.h>
 #include "esp32_r4ge_pro.h"
@@ -14,19 +28,23 @@
 // To run, update the SSID info and upload.
 
 // TODO - Enter your WiFi setup here:
-const char *SSID = "TODO";
-const char *PASSWORD = "TODO";
+const char *SSID = "";
+const char *PASSWORD = "";
 
-#define STATION_CNT 9
+// WARNING!  Internet radio stations come and go, and may change their characteristics.
+// There is no guarantee that this list will work for you.
+// Please plug in your own favorite stations and update the station count.
+
+#define STATION_CNT 6
 const char* station[STATION_CNT][2] = 
 { 
-  { "ShoutCast - Dance", "http://78.31.65.20:8080/dance.mp3" },
-  { "ShoutCast - Classic Rock", "http://144.217.158.59:5098/stream" },
   { "PureRock.US", "http://167.114.64.181:8524/stream" },
+  //{ "ShoutCast - Dance", "http://78.31.65.20:8080/dance.mp3" },
+  //{ "ShoutCast - Classic Rock", "http://144.217.158.59:5098/stream" },
   { "The Oasis - Classic Rock", "http://janus.cdnstream.com:5014/;?esPlayer&cb=88591.mp3/;stream/1"},
   { "Hot Hitz 80's", "http://50.97.94.44:9900/stream" },
   { "The Big 80s Station", "http://149.56.155.73:8052/stream" },
-  { "J-Pop Sakura 17", "http://144.217.253.136:8519/stream" },
+  //{ "J-Pop Sakura 17", "http://144.217.253.136:8519/stream" },
   { "Ambient Sleeping Pill", "http://163.172.169.217:80/asp-s" },
   { "PsyRadio*FM", "http://81.88.36.42:8010/progressive/" }
   
