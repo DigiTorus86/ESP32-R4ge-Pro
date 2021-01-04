@@ -26,6 +26,7 @@ Software and resources for the ESP32 R4ge Pro custom badge.  Both the hardware a
 - Synth:   A graphical 4-operator/4-voice FM synth, playable via on-screen keyboard + stylus, 8 step sequencer, or MIDI input on the RX2 pin. 
 - Test1:   Used to verify the operation of the board components and do any calibration (microphone/joysticks).<br> 
 - Time and Weather:  Clock and weather station. (Port from original ESP32 Conference Badge)<br>
+- Tombstone:  Port of the classic TI game.    
 - Web Radio:  Internet radio station selector and player.<br>
 </p>
 <p>
