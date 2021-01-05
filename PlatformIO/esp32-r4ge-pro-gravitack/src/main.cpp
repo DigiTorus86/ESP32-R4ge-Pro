@@ -5,22 +5,28 @@ by Paul Pagel
 
 Requires:
  - ESP32 R4ge Pro
+ - ESP8266Audio library:  https://github.com/earlephilhower/ESP8266Audio 
 
- Copyright (c) 2020 Paul Pagel
+Copyright (c) 2021 Paul Pagel
 This is free software; see the license.txt file for more information.
 There is no warranty; not even for merchantability or fitness for a particular purpose.
 *****************************************************/
 
 #include <Arduino.h>
-#include "esp32_r4ge_pro.h" 
-#include <XPT2046_Touchscreen.h>
+#include <SD.h>
+#include "esp32_r4ge_pro.h"
+#include <WiFi.h>
+#include "AudioFileSourcePROGMEM.h"
+#include "AudioGeneratorWAV.h"
+#include "AudioOutputI2S.h"
+
 #include "Levels.h"
 #include "Bitmaps.h"
-//#include "FireWav.h"
-//#include "RefuelWav.h"
-//#include "ExplosionWav.h"
-//#include "WarpWav.h"
-//#include "TickWav.h"
+#include "fire_wav.h"
+#include "refuel_wav.h"
+#include "explosion_wav.h"
+#include "warp_wav.h"
+#include "tick_wav.h"
 
 #define SHIP_SIZE    8
 #define THRUST_SIZE  3 
@@ -113,7 +119,13 @@ int turret_offset_x[4] = { 10, 10,-10, 20};
 int turret_offset_y[4] = {-10, 10, 10, 10};
 
 // Sound FX
-// TODO!
+AudioGeneratorWAV *wav;
+AudioFileSourcePROGMEM *fire_file;
+AudioFileSourcePROGMEM *explosion_file;
+AudioFileSourcePROGMEM *refuel_file;
+AudioFileSourcePROGMEM *tick_file;
+AudioFileSourcePROGMEM *warp_file;
+AudioOutputI2S *audio_out;
 
 Adafruit_ILI9341 tft = Adafruit_ILI9341(TFT_CS, TFT_DC, TFT_RST);
 
@@ -124,8 +136,11 @@ void drawPaused();
 void erasePaused();
 void drawGameOver();
 void wipeGameArea();
-void playShot();
-void playFuelSound();
+void playShotSound();
+void playExplosionSound();
+void playRefuelSound();
+void playTickSound();
+void playWarpSound();
 void drawExplosion(int x, int y, int maxRadius);
 void initShots();
 void loadLevelData(const int levelData[]);
@@ -162,6 +177,8 @@ void killPlayer();
 void advanceLevel();
 void checkButtonPresses();
 void checkJoysticks();
+void checkAudio();
+void delayAudio(long ms);
 void handleTitle();
 void handleRules();
 void handlePlaying();
@@ -174,10 +191,11 @@ void handleGameOver();
  */
 void setup() 
 {
-  Serial.begin(115200);
+  Serial.begin(9600);
   Serial.println("ESP32 R4ge Pro - Gravitack"); 
   delay(100);
 
+  Serial.print("Setting up pins..."); 
   pinMode(ESP_LED, OUTPUT);  // built-in blue LED on NodeMCU
 
   // Set up shift register pins
@@ -199,11 +217,28 @@ void setup()
   pinMode(JOYX_R, INPUT);
   pinMode(JOYY_R, INPUT);
 
+  Serial.println("done"); 
   delay(100);
   
   // Set up the TFT and touch screen
+  Serial.print("Setting display..."); 
   tft.begin();
   tft.setRotation(SCREEN_ROT);
+  Serial.println("done"); 
+
+  Serial.print("Setting audio..."); 
+
+  audioLogger = &Serial;
+  explosion_file = new AudioFileSourcePROGMEM(explosion_wav, sizeof(explosion_wav));
+  fire_file = new AudioFileSourcePROGMEM(fire_wav, sizeof(fire_wav));
+  refuel_file = new AudioFileSourcePROGMEM(refuel_wav, sizeof(refuel_wav));
+  tick_file = new AudioFileSourcePROGMEM(tick_wav, sizeof(tick_wav));
+  warp_file = new AudioFileSourcePROGMEM(warp_wav, sizeof(warp_wav));
+  audio_out = new AudioOutputI2S();
+  audio_out->SetPinout(I2S_BCLK, I2S_LRCK, I2S_DOUT);
+  wav = new AudioGeneratorWAV();
+
+  Serial.println("done"); 
 
   drawTitleScreen();
 }
@@ -332,7 +367,7 @@ void drawPaused()
 void erasePaused()
 {
   tft.fillRect(110, 20, 112, 20, ILI9341_BLACK);
-  delay(200);
+  delayAudio(200);
   
   game_state = STATE_PLAYING;
 }
@@ -362,54 +397,87 @@ void drawGameOver()
 
 void wipeGameArea()
 {
-  //DacAudio.Play(&warp_play);
+  playWarpSound();
   for (int i = 0; i <= 110; i++)
   {
     tft.drawRect(110 - i, 130 - i, i * 2 + 100, i * 2, ILI9341_WHITE);
-    //DacAudio.FillBuffer(); 
+    checkAudio();
   }
-  //DacAudio.FillBuffer(); 
+  checkAudio();
   for (int i = 0; i <= 110; i++)
   {
     tft.drawRect(110 - i, 130 - i, i * 2 + 100, i * 2, ILI9341_BLACK);
-    //DacAudio.FillBuffer(); 
+    checkAudio();
   }
 }
 
 /*
  * Plays the player shot sound
  */
-void playShot()
+void playShotSound()
 {
-  //DacAudio.Play(&fire_play);
+  wav->stop();
+  fire_file = new AudioFileSourcePROGMEM(fire_wav, sizeof(fire_wav));
+  wav->begin(fire_file, audio_out);
 }
+
+/*
+ * Plays the explosion sound
+ */
+void playExplosionSound()
+{
+  wav->stop();
+  explosion_file = new AudioFileSourcePROGMEM(explosion_wav, sizeof(explosion_wav));
+  wav->begin(explosion_file, audio_out);
+}
+
+/* 
+ *  Plays the fuel pickup sound 
+ */
+void playRefuelSound()
+{
+  wav->stop();
+  refuel_file = new AudioFileSourcePROGMEM(refuel_wav, sizeof(refuel_wav));
+  wav->begin(refuel_file, audio_out);
+}
+
+/* 
+ *  Plays the tick sound 
+ */
+void playTickSound()
+{
+  wav->stop();
+  tick_file = new AudioFileSourcePROGMEM(tick_wav, sizeof(tick_wav));
+  wav->begin(tick_file, audio_out);
+}
+
+/* 
+ *  Plays the level warp sound 
+ */
+void playWarpSound()
+{
+  wav->stop();
+  warp_file = new AudioFileSourcePROGMEM(warp_wav, sizeof(warp_wav));
+  wav->begin(warp_file, audio_out);
+}
+
 
 /*
  * Draws and plays an explosion sound for a turret or the player ship
  */
 void drawExplosion(int x, int y, int maxRadius)
 {
-  //DacAudio.Play(&explosion_play);
+  playExplosionSound();
   for (int i = 1; i <= maxRadius; i++)
   {
     tft.drawCircle(x, y, i, ILI9341_YELLOW);
-    //DacAudio.FillBuffer(); 
-    delay(10);
+    delayAudio(10);
   }
   for (int i = 1; i <= maxRadius; i++)
   {
     tft.drawCircle(x, y, i, ILI9341_BLACK);
-    //DacAudio.FillBuffer(); 
-    delay(10);
+    delayAudio(10);
   }
-}
-
-/* 
- *  Plays the fuel pickup sound 
- */
-void playFuelSound()
-{
-  //DacAudio.Play(&refuel_play);
 }
 
 /*
@@ -621,7 +689,7 @@ void changePlayerScore(int changeAmt)
  */
 void drawPlayerLives()
 {
-    int ctr_x, ctr_y;
+    int ctr_x = 0, ctr_y = 0;
     int x[5], y[5];
     
     for (int i = 0; i < MAX_LIVES; i++)
@@ -854,7 +922,7 @@ void createPlayerShot(int x, int y, double rotation)
       shot_range[i] = player_shot_range;
       shot_speed_x[i] = sin(rotation + PId2) * SHOT_SPEED;
       shot_speed_y[i] = -cos(rotation + PId2) * SHOT_SPEED;
-      playShot();
+      playShotSound();
       return;
     }
   }
@@ -937,7 +1005,7 @@ void createTurretShot(int x, int y)
 
       turret_shot_speed_x[i] = speed_x;
       turret_shot_speed_y[i] = speed_y;
-      playShot();
+      playShotSound();
       return;
     }
   }
@@ -1021,7 +1089,7 @@ int checkFuelHit(int x, int y, double tolerance)
     {
       if (hitsFuel(i, x, y, tolerance))
       {
-        playFuelSound();
+        playRefuelSound();
         eraseFuelPack(fuel_x[i], fuel_y[i]);
         fuel_active[i] = false;
         return i;
@@ -1194,7 +1262,7 @@ void startPlayer()
   player_speed_y = 0;
   player_rotation = PIx15; // up
   player_fuel = 100;
-  delay(200);
+  delayAudio(200);
   drawPlayerFuel();
   drawPlayerLives();
 }
@@ -1229,11 +1297,11 @@ void advanceLevel()
   for (int i = player_fuel; i >= 0; i--)
   {
     // play tick sound
-    //DacAudio.Play(&tick_play);
+    checkAudio();
     changePlayerScore(10);
-    //DacAudio.FillBuffer(); 
+    checkAudio();
     changePlayerFuel(-1);
-    //DacAudio.FillBuffer(); 
+    checkAudio();
   }
   
   level += 1;
@@ -1253,7 +1321,7 @@ void checkButtonPresses()
   
   digitalWrite(SR_CP, LOW);
   digitalWrite(SR_PL, LOW);
-  delay(5);
+  delayAudio(5);
   digitalWrite(SR_PL, HIGH);
 
   for(uint8_t i = 0; i < 8; i++)
@@ -1267,6 +1335,7 @@ void checkButtonPresses()
     delay(1);
     digitalWrite(SR_CP, HIGH);
     delay(1);
+    checkAudio();
     //Serial.print(i); Serial.print(": "); Serial.print(btn_pressed[i]); Serial.print(" - "); Serial.println(btn_released[i]);
   }
 }
@@ -1298,6 +1367,36 @@ float normalizeJoy(int16_t joy_val)
   return norm_val;
 }
 
+/*
+ * Updates any playing audio.  
+ * Call this frequently to avoid breaks in the sound. 
+ */
+void checkAudio()
+{
+  if (wav->isRunning()) 
+    {
+      if (!wav->loop()) 
+      {
+        wav->stop();
+      }
+    }
+}
+
+/*
+ * Waits for the specified number of milliseconds while updating audio.
+ * 
+ * ms: The minimum number of milliseconds to delay.
+ */
+
+void delayAudio(long ms)
+{
+  long start_time = millis();
+  
+  while (millis() - start_time < ms)
+  {
+    checkAudio();
+  }
+}
 
 /*
  * Main program loop
@@ -1327,8 +1426,7 @@ void loop()
     
   }
 
-  //DacAudio.FillBuffer(); // load data for any pending audio samples
-  delay(level_delay);
+  delayAudio(level_delay);
 }
 
 /*
