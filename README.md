@@ -1,6 +1,6 @@
 # ESP32-R4ge-Pro
 <p>
-Software and resources for the ESP32 R4ge Pro custom badge.  Both the hardware and software is still in a pre-release state. See documents folder for schematic.  
+Software and resources for the ESP32 R4ge Pro custom badge. See documents folder for schematic.  
 </p>
 
 ![alt text](https://raw.githubusercontent.com/DigiTorus86/ESP32-R4ge-Pro/master/images/esp32_pro_audio.jpg)
