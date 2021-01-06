@@ -7,7 +7,7 @@ Software and resources for the ESP32 R4ge Pro custom badge. See documents folder
 
 <h3>Key Components/Requirements</h3>
 <p>
-- Custom PCB <a href="https://www.pcbway.com/project/shareproject/ESP32_R4ge_Pro.html"><img src="https://www.pcbway.com/project/img/images/frompcbway.png" alt="PCB from=From pcbway"=Pcbway" /></a>
+- <a href="https://www.pcbway.com/project/shareproject/ESP32_R4ge_Pro.html">Custom PCB</a><br>
 - ESP32 DevKitC w/38 pins (other ESP32 boards can be used with minimal PIN changes)<br>
 - ILI9341 320x240 TFT with touch and SD card slot<br>
 - 2 Analog joysticks<br>
