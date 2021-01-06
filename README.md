@@ -21,7 +21,7 @@ Software and resources for the ESP32 R4ge Pro custom badge. See documents folder
 <h3>App Descriptions</h3>
 <p>
 - Audio:   Allows for WAV recording, play back, serialization, and frequency analysis.  Requires SD card for some functions.<br>
-- BLE Controller:   Allows you to use the joysticks and buttons of the ESP32 R4ge Pro to control another ESP32/Bluetooth device operating in the central role, such as a robot tank.  
+- BLE Controller:   Allows you to use the joysticks and buttons of the ESP32 R4ge Pro to control another ESP32/Bluetooth device operating in the central role, such as a robot tank.<br> 
 - Drummer: A 4-channel sequencer using percussion samples.<br>
 - Gravitack:  Classic space shooter. (Port from original ESP32 Conference Badge) <br>
 - Prong:   A simple pong-type game for 1 or 2 players.<br>
