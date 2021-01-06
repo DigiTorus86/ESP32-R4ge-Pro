@@ -1,12 +1,13 @@
 # ESP32-R4ge-Pro
 <p>
-Software and resources for the ESP32 R4ge Pro custom badge.  Both the hardware and software is still in a pre-release state. See documents folder for schematic.  
+Software and resources for the ESP32 R4ge Pro custom badge. See documents folder for schematic.  
 </p>
 
 ![alt text](https://raw.githubusercontent.com/DigiTorus86/ESP32-R4ge-Pro/master/images/esp32_pro_audio.jpg)
 
 <h3>Key Components/Requirements</h3>
 <p>
+- <a href="https://www.pcbway.com/project/shareproject/ESP32_R4ge_Pro.html">Custom PCB</a><br>
 - ESP32 DevKitC w/38 pins (other ESP32 boards can be used with minimal PIN changes)<br>
 - ILI9341 320x240 TFT with touch and SD card slot<br>
 - 2 Analog joysticks<br>
