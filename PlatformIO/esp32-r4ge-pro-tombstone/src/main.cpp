@@ -25,6 +25,7 @@ There is no warranty; not even for merchantability or fitness for a particular p
 #include "explosion_wav.h"
 #include "fire_wav.h"
 #include "life_wav.h"
+#include "boop_wav.h"
 #include "theme_wav.h"
 #include "Tombstone_title.h" 
 #include "Tiles.h" 
@@ -99,6 +100,7 @@ AudioGeneratorWAV *wav;
 AudioFileSourcePROGMEM *fire_file;
 AudioFileSourcePROGMEM *explosion_file;
 AudioFileSourcePROGMEM *life_file;
+AudioFileSourcePROGMEM *boop_file;
 AudioFileSourcePROGMEM *theme_file;
 AudioOutputI2S *out;
 
@@ -131,7 +133,7 @@ int     getSpawnCount();
 void    checkCactusTriplet(int row, int col);
 void    playShot();
 void    playExplosion();
-void    playTeleport();
+void    playBoop();
 void    playNextDaySong();
 void    playThemeSong();
 void    killPlayer();
@@ -212,6 +214,7 @@ void setup()
   explosion_file = new AudioFileSourcePROGMEM(explosion_wav, sizeof(explosion_wav));
   fire_file = new AudioFileSourcePROGMEM(fire_wav, sizeof(fire_wav));
   life_file = new AudioFileSourcePROGMEM(life_wav, sizeof(life_wav));
+  boop_file = new AudioFileSourcePROGMEM(boop_wav, sizeof(boop_wav));
   theme_file = new AudioFileSourcePROGMEM(theme_wav, sizeof(theme_wav));
   out = new AudioOutputI2S();
   out->SetPinout(I2S_BCLK, I2S_LRCK, I2S_DOUT);
@@ -345,7 +348,7 @@ void drawGameScreen()
   addCacti(10 + difficulty * 5);  
   addSpawnCacti(difficulty); // ensure that we have at least one spawning pair
   
-  addTumbleweeds(10 + 5 * difficulty);  // testing
+  addTumbleweeds(10 + 5 * difficulty);
   addMorgs(difficulty);  
 
   playerStart();
@@ -910,11 +913,13 @@ void playLife()
 }
 
 /* 
- *  Plays the teleport sound when player hits the panic button
+ *  Plays the boop/teleport sound when player hits the panic button
  */
-void playTeleport()
+void playBoop()
 {
-  // TODO
+  wav->stop();
+  boop_file = new AudioFileSourcePROGMEM(boop_wav, sizeof(boop_wav));
+  wav->begin(boop_file, out);
 }
 
 /*
@@ -941,16 +946,15 @@ void playThemeSong()
 void killPlayer()
 { 
   setTileType(player_row, player_col, TILE_EXPLOSION, true); 
-  playExplosion();
-  
   setTileType(player_row, player_col, TILE_EMPTY, true);
+
   if (shot_active)
     setTileType(shot_row, shot_col, TILE_EMPTY, true);
-  
-  delayAudio(500);
 
   if (schooners == 0)
   {
+    playLife();
+    delayAudio(500);
     drawGameOver();
     return;    
   }
@@ -1001,13 +1005,14 @@ void playerPanic()
     return;  // can't teleport
 
   setTileType(player_row, player_col, TILE_EMPTY, true);
-  playTeleport();
+  playBoop();
     
   player_row = 8;
   player_col = 13;
   drawPlayer();
 
   population -= 1000;
+  drawPopulation();
 
   delayAudio(100);
 }
@@ -1322,9 +1327,12 @@ void playerStart()
   player_dir = DIR_UP;
   shot_active = false;
 
+  playLife();
+  delayAudio(500);
   setTileType(player_row, player_col, TILE_PLAYER, false);
   drawPlayer();
-  playLife();
+  playBoop();
+  delayAudio(200);
 }
 
 /*
@@ -1561,6 +1569,7 @@ void handleGameOver()
 {
   if (btn_pressed[BTN_Y])
   {
+    initGame();
     drawTitleScreen();
   }
 }
