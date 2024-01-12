@@ -5,6 +5,9 @@
 * Requires:
 * - ESP32 R4ge Pro 
 * - ESP8266Audio library:  https://github.com/earlephilhower/ESP8266Audio 
+*    When using IDF >= 4.2.0, need to change AudioOutputI2s.cpp line 91 to:
+*   .mck_io_num = I2S_PIN_NO_CHANGE
+*   ...otherwise audio won't work right due to MCLK pin changes.
 
 Copyright (c) 2020 Paul Pagel
 This is free software; see the license.txt file for more information.
@@ -927,6 +930,7 @@ void playNextDaySong()
  */
 void playThemeSong()
 {
+  wav->stop();
   wav->begin(theme_file, out);
 }
 
@@ -1002,6 +1006,9 @@ void playerPanic()
   player_row = 8;
   player_col = 13;
   drawPlayer();
+
+  population -= 1000;
+
   delayAudio(100);
 }
 
@@ -1349,7 +1356,8 @@ void checkButtonPresses()
   
   digitalWrite(SR_CP, LOW);
   digitalWrite(SR_PL, LOW);
-  delayAudio(5);
+  //delayAudio(5);
+  delay(5);
   digitalWrite(SR_PL, HIGH);
 
   for(uint8_t i = 0; i < 8; i++)
